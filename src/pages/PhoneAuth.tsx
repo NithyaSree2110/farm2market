@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   auth,
@@ -23,6 +23,13 @@ import { ArrowRight, Loader2 } from "lucide-react";
 
 type Role = "admin" | "farmer" | "buyer";
 
+declare global {
+  interface Window {
+    recaptchaVerifier?: RecaptchaVerifier;
+    confirmationResult?: ConfirmationResult;
+  }
+}
+
 export default function PhoneAuth() {
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
@@ -34,25 +41,43 @@ export default function PhoneAuth() {
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role | "">("");
 
-  const recaptchaRef = useRef<HTMLDivElement>(null);
-  const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
-
   const navigate = useNavigate();
   const { toast } = useToast();
   const { t } = useLanguage();
-  const { userRole, saveProfile, loading } = useAuth();
+  const { saveProfile, loading } = useAuth();
 
   // Always start fresh: sign out any existing Firebase session
   useEffect(() => {
     auth.signOut().catch(() => {});
   }, []);
 
-  // Clean up reCAPTCHA on unmount
+  // Initialize reCAPTCHA once
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!auth) return;
+
+    if (!window.recaptchaVerifier) {
+      try {
+        window.recaptchaVerifier = new RecaptchaVerifier(
+          auth,
+          "recaptcha-container",
+          {
+            size: "invisible",
+            callback: () => {
+              // reCAPTCHA solved automatically for invisible mode
+            },
+          }
+        );
+      } catch (err) {
+        console.error("reCAPTCHA init error:", err);
+      }
+    }
+
     return () => {
-      if (recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current.clear();
-        recaptchaVerifierRef.current = null;
+      // optional: tear down on unmount
+      if (window.recaptchaVerifier) {
+        window.recaptchaVerifier.clear();
+        window.recaptchaVerifier = undefined;
       }
     };
   }, []);
@@ -81,29 +106,17 @@ export default function PhoneAuth() {
       const formattedPhone = phone.startsWith("+") ? phone : `+91${phone}`;
 
       if (!auth) throw new Error("Auth not available");
-
-      if (!recaptchaVerifierRef.current) {
-        if (!recaptchaRef.current) {
-          throw new Error("reCAPTCHA container not found");
-        }
-
-        recaptchaVerifierRef.current = new RecaptchaVerifier(
-          auth,
-          recaptchaRef.current,
-          {
-            size: "invisible",
-            callback: () => {},
-          }
-        );
-      }
+      const appVerifier = window.recaptchaVerifier;
+      if (!appVerifier) throw new Error("reCAPTCHA not initialized");
 
       const result = await signInWithPhoneNumber(
         auth,
         formattedPhone,
-        recaptchaVerifierRef.current
+        appVerifier
       );
 
       setConfirmationResult(result);
+      window.confirmationResult = result;
       setStep("otp");
       toast({ title: t("otpSent") });
     } catch (error: any) {
@@ -114,9 +127,10 @@ export default function PhoneAuth() {
         variant: "destructive",
       });
 
-      if (recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current.clear();
-        recaptchaVerifierRef.current = null;
+      // Reset reCAPTCHA on error so it can be used again
+      if (window.recaptchaVerifier) {
+        window.recaptchaVerifier.clear();
+        window.recaptchaVerifier = undefined;
       }
     } finally {
       setIsLoading(false);
@@ -131,9 +145,10 @@ export default function PhoneAuth() {
 
     setIsLoading(true);
     try {
-      if (!confirmationResult) throw new Error("No confirmation result");
+      const conf = confirmationResult || window.confirmationResult;
+      if (!conf) throw new Error("No confirmation result");
 
-      await confirmationResult.confirm(otp);
+      await conf.confirm(otp);
       toast({ title: t("loginSuccess") });
       setStep("profile");
     } catch (error: any) {
@@ -331,7 +346,9 @@ export default function PhoneAuth() {
           )}
         </CardContent>
       </Card>
-      <div ref={recaptchaRef} />
+
+      {/* reCAPTCHA container (must exist in DOM) */}
+      <div id="recaptcha-container" />
     </div>
   );
 }

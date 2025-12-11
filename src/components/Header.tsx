@@ -33,15 +33,15 @@ export function Header() {
           {user && (
             <>
               {/* Bazaar/Browse - All roles can see */}
-              <Link to="/marketplace">
+              {/* <Link to="/marketplace">
                 <Button variant="ghost" size="sm" className="gap-2">
                   <ShoppingBag className="h-4 w-4" />
                   <span className="hidden sm:inline">{t('marketplace')}</span>
                 </Button>
-              </Link>
+              </Link> */}
 
               {/* Farmer only: My Crops & Add Crop */}
-              {isFarmer && (
+              {/* {isFarmer && (
                 <>
                   <Link to="/my-crops">
                     <Button variant="ghost" size="sm" className="gap-2">
@@ -56,23 +56,23 @@ export function Header() {
                     </Button>
                   </Link>
                 </>
-              )}
+              )} */}
 
               {/* Chat - All roles */}
-              <Link to="/chat">
+              {/* <Link to="/chat">
                 <Button variant="ghost" size="sm" className="gap-2">
                   <MessageSquare className="h-4 w-4" />
                   <span className="hidden sm:inline">{t('chat')}</span>
                 </Button>
-              </Link>
+              </Link> */}
 
               {/* Orders - context depends on role */}
-              <Link to="/orders">
+              {/* <Link to="/orders">
                 <Button variant="ghost" size="sm" className="gap-2">
                   <LayoutDashboard className="h-4 w-4" />
                   <span className="hidden sm:inline">{t('myOrders')}</span>
                 </Button>
-              </Link>
+              </Link> */}
 
               {/* Farmer Dashboard shortcut */}
               {isFarmer && (

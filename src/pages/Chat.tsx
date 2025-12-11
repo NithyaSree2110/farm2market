@@ -10,7 +10,6 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { Send, MessageSquare, ArrowLeft } from "lucide-react";
 import { AgriBuddy } from "@/components/AgriBuddy";
-// (same Chat.tsx I gave in the previous reply; keep that version)
 
 interface ChatRoom {
   id: string;
@@ -169,17 +168,31 @@ export default function Chat() {
     }
   };
 
+  // 🔧 FIXED: derive receiver from active chat instead of using selectedprofileId
   const sendMessage = async () => {
     if (!newMessage.trim() || !activeChat || !profileId) return;
+
+    const chat = chats.find((c) => c.id === activeChat);
+    if (!chat) return;
+
+    const receiverId =
+      chat.farmer_id === profileId ? chat.buyer_id : chat.farmer_id;
+
+    if (!receiverId) {
+      console.error("No receiver_id for chat", chat);
+      return;
+    }
 
     try {
       const { error } = await supabase.from("messages").insert({
         chat_id: activeChat,
         sender_id: profileId,
+        receiver_id: receiverId, // 👈 now guaranteed non-null
         content: newMessage.trim(),
       });
 
       if (error) throw error;
+
       setNewMessage("");
 
       await supabase

@@ -5,11 +5,11 @@ import { useAuth } from '@/contexts/AuthContext';
 // Redirect to phone auth - no email login
 export default function Auth() {
   const navigate = useNavigate();
-  const { user, userRole, loading, needsRoleSelection } = useAuth();
+  const { user, userRole, loading } = useAuth(); // 👈 removed needsRoleSelection
 
   useEffect(() => {
     if (!loading) {
-      if (user && userRole && !needsRoleSelection) {
+      if (user && userRole) {
         // Already logged in, redirect based on role
         switch (userRole) {
           case 'admin':
@@ -22,11 +22,11 @@ export default function Auth() {
             navigate('/marketplace');
         }
       } else {
-        // Not logged in or needs role, go to phone auth
+        // Not logged in or no role yet, go to phone auth
         navigate('/phone-auth');
       }
     }
-  }, [user, userRole, loading, needsRoleSelection, navigate]);
+  }, [user, userRole, loading, navigate]); // 👈 removed needsRoleSelection from deps
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-warm">

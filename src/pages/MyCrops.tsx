@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { Plus, Edit, Trash2, Upload } from 'lucide-react';
+import { Plus, Edit, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -19,81 +19,142 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 
+const BUCKET_NAME = 'crop-images';
+
 export default function MyCrops() {
   const [crops, setCrops] = useState<any[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [editingCrop, setEditingCrop] = useState<any>(null);
   const [uploading, setUploading] = useState(false);
-  const { user } = useAuth();
+  const { user, profileId } = useAuth();
+  // prefer profileId (typed). fallback to common user id shapes safely using any-cast
+  const authUserId: string | null = (profileId as string) || ( (user as any)?.id ?? (user as any)?.uid ?? null );
+
   const { toast } = useToast();
   const { t } = useLanguage();
 
   useEffect(() => {
     if (user) fetchCrops();
   }, [user]);
+// prefer profileId (typed); fallback to any-cast on user for legacy shape
 
   const fetchCrops = async () => {
     const { data } = await supabase
       .from('crops')
       .select('*')
-      .eq('farmer_id', user?.uid)
+      .eq('farmer_id', profileId || ((user as any)?.id ?? (user as any)?.uid))
       .order('created_at', { ascending: false });
     setCrops(data || []);
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user) return;
+  // Upload helper (returns public or signed URL)
+  const handleImageUpload = async (file: File | null) => {
+  if (!file || !authUserId) return null;
 
-    setUploading(true);
-    try {
-      const fileExt = file.name.split('.').pop();
-      const filePath = `${user.uid}/${Date.now()}.${fileExt}`;
+  setUploading(true);
+  try {
+    const fileExt = file.name.split('.').pop();
+    const filePath = `${authUserId}/${Date.now()}.${fileExt}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from('crop-images')
-        .upload(filePath, file);
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET_NAME)
+      .upload(filePath, file);
 
-      if (uploadError) throw uploadError;
+    if (uploadError) throw uploadError;
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('crop-images')
-        .getPublicUrl(filePath);
+    const { data: publicData } = supabase.storage
+      .from(BUCKET_NAME)
+      .getPublicUrl(filePath);
 
-      return publicUrl;
-    } catch (error: any) {
-      toast({
-        title: 'Upload failed',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setUploading(false);
-    }
-  };
+    if (publicData?.publicUrl) return publicData.publicUrl;
+
+    const { data: signedData } = await supabase.storage
+      .from(BUCKET_NAME)
+      .createSignedUrl(filePath, 60 * 60);
+
+    return signedData?.signedUrl ?? null;
+  } catch (error: any) {
+    toast({
+      title: 'Upload failed',
+      description: error.message || String(error),
+      variant: 'destructive',
+    });
+    console.error('Image upload error:', error);
+    return null;
+  } finally {
+    setUploading(false);
+  }
+};
+
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    
-    const imageInput = formData.get('image') as File;
-    let imageUrl = editingCrop?.image_url || null;
 
-    if (imageInput?.size > 0) {
-      const uploadedUrl = await handleImageUpload({
-        target: { files: [imageInput] }
-      } as any);
-      if (uploadedUrl) imageUrl = uploadedUrl;
+    // read file directly from FormData
+    const imageEntry = formData.get('image');
+    let imageFile: File | null = null;
+    if (imageEntry instanceof File && imageEntry.size > 0) {
+      imageFile = imageEntry;
     }
 
-    const cropData = {
-      name: formData.get('name') as string,
-      description: formData.get('description') as string,
-      price_per_kg: parseFloat(formData.get('price_per_kg') as string),
-      quantity_kg: parseFloat(formData.get('quantity_kg') as string),
-      location: formData.get('location') as string,
+    let imageUrl = editingCrop?.image_url || null;
+    if (imageFile) {
+      const uploadedUrl = await handleImageUpload(imageFile);
+      if (!uploadedUrl) return; // abort if upload failed
+      imageUrl = uploadedUrl;
+    }
+
+    // Build translations JSON objects (en is original value)
+    const name = (formData.get('name') as string)?.trim() || '';
+    const description = (formData.get('description') as string)?.trim() || '';
+    const location = (formData.get('location') as string)?.trim() || '';
+
+    const name_translations = {
+      en: name,
+      hi: (formData.get('name_hi') as string)?.trim() || null,
+      te: (formData.get('name_te') as string)?.trim() || null,
+      kn: (formData.get('name_kn') as string)?.trim() || null,
+    };
+
+    const description_translations = {
+      en: description,
+      hi: (formData.get('description_hi') as string)?.trim() || null,
+      te: (formData.get('description_te') as string)?.trim() || null,
+      kn: (formData.get('description_kn') as string)?.trim() || null,
+    };
+
+    const location_translations = {
+      en: location,
+      hi: (formData.get('location_hi') as string)?.trim() || null,
+      te: (formData.get('location_te') as string)?.trim() || null,
+      kn: (formData.get('location_kn') as string)?.trim() || null,
+    };
+
+    // ensure farmer id is correct for RLS
+    const farmerId = profileId ?? (user as any)?.id ?? (user as any)?.uid ?? null;
+    if (!farmerId) {
+      toast({
+        title: 'Error',
+        description: 'Unable to determine farmer id. Please re-login.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const cropData: any = {
+      name,
+      description,
+      price_per_kg: parseFloat(formData.get('price_per_kg') as string) || 0,
+      quantity_kg: parseFloat(formData.get('quantity_kg') as string) || 0,
+      location,
       image_url: imageUrl,
-      farmer_id: user?.uid,
+      farmer_id: farmerId,
+      // store translation JSON; DB column type should be json/jsonb
+      name_translations,
+      description_translations,
+      location_translations,
+      available: true,
     };
 
     try {
@@ -111,14 +172,14 @@ export default function MyCrops() {
         if (error) throw error;
         toast({ title: 'Crop added!' });
       }
-      
+
       setIsOpen(false);
       setEditingCrop(null);
       fetchCrops();
     } catch (error: any) {
       toast({
         title: 'Error',
-        description: error.message,
+        description: error.message || String(error),
         variant: 'destructive',
       });
     }
@@ -126,7 +187,7 @@ export default function MyCrops() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this crop?')) return;
-    
+
     const { error } = await supabase
       .from('crops')
       .delete()
@@ -170,7 +231,7 @@ export default function MyCrops() {
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <Label htmlFor="name">Crop Name</Label>
+                  <Label htmlFor="name">Crop Name (EN)</Label>
                   <Input
                     id="name"
                     name="name"
@@ -178,8 +239,25 @@ export default function MyCrops() {
                     required
                   />
                 </div>
+
+                {/* Translation inputs (optional) */}
+                <div className="grid md:grid-cols-3 gap-2">
+                  <div>
+                    <Label htmlFor="name_hi">Name (Hindi)</Label>
+                    <Input id="name_hi" name="name_hi" defaultValue={editingCrop?.name_translations?.hi || ''} />
+                  </div>
+                  <div>
+                    <Label htmlFor="name_te">Name (Telugu)</Label>
+                    <Input id="name_te" name="name_te" defaultValue={editingCrop?.name_translations?.te || ''} />
+                  </div>
+                  <div>
+                    <Label htmlFor="name_kn">Name (Kannada)</Label>
+                    <Input id="name_kn" name="name_kn" defaultValue={editingCrop?.name_translations?.kn || ''} />
+                  </div>
+                </div>
+
                 <div>
-                  <Label htmlFor="description">Description</Label>
+                  <Label htmlFor="description">Description (EN)</Label>
                   <Textarea
                     id="description"
                     name="description"
@@ -187,6 +265,22 @@ export default function MyCrops() {
                     rows={3}
                   />
                 </div>
+
+                <div className="grid md:grid-cols-3 gap-2">
+                  <div>
+                    <Label htmlFor="description_hi">Description (Hindi)</Label>
+                    <Textarea id="description_hi" name="description_hi" defaultValue={editingCrop?.description_translations?.hi || ''} rows={2} />
+                  </div>
+                  <div>
+                    <Label htmlFor="description_te">Description (Telugu)</Label>
+                    <Textarea id="description_te" name="description_te" defaultValue={editingCrop?.description_translations?.te || ''} rows={2} />
+                  </div>
+                  <div>
+                    <Label htmlFor="description_kn">Description (Kannada)</Label>
+                    <Textarea id="description_kn" name="description_kn" defaultValue={editingCrop?.description_translations?.kn || ''} rows={2} />
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label htmlFor="price_per_kg">Price per kg (₹)</Label>
@@ -211,14 +305,27 @@ export default function MyCrops() {
                     />
                   </div>
                 </div>
+
                 <div>
-                  <Label htmlFor="location">Location</Label>
-                  <Input
-                    id="location"
-                    name="location"
-                    defaultValue={editingCrop?.location}
-                  />
+                  <Label htmlFor="location">Location (EN)</Label>
+                  <Input id="location" name="location" defaultValue={editingCrop?.location} />
                 </div>
+
+                <div className="grid md:grid-cols-3 gap-2">
+                  <div>
+                    <Label htmlFor="location_hi">Location (Hindi)</Label>
+                    <Input id="location_hi" name="location_hi" defaultValue={editingCrop?.location_translations?.hi || ''} />
+                  </div>
+                  <div>
+                    <Label htmlFor="location_te">Location (Telugu)</Label>
+                    <Input id="location_te" name="location_te" defaultValue={editingCrop?.location_translations?.te || ''} />
+                  </div>
+                  <div>
+                    <Label htmlFor="location_kn">Location (Kannada)</Label>
+                    <Input id="location_kn" name="location_kn" defaultValue={editingCrop?.location_translations?.kn || ''} />
+                  </div>
+                </div>
+
                 <div>
                   <Label htmlFor="image">Image</Label>
                   <Input
@@ -236,12 +343,11 @@ export default function MyCrops() {
             </DialogContent>
           </Dialog>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
           {crops.map((crop) => (
             <Card key={crop.id} className="overflow-hidden hover:shadow-medium transition-shadow">
               <CardHeader className="p-0">
-                <div className="h-48 bg-gradient-to-br from-primary-light to-primary">
+                <div className="h-48 bg-gradient-to-br from-primary-light to-primary relative overflow-hidden">
                   {crop.image_url ? (
                     <img
                       src={crop.image_url}

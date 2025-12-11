@@ -19,6 +19,11 @@ interface Crop {
   image_url: string | null;
   location: string | null;
   farmer_id: string;
+  // translations stored as JSON in DB
+  name_translations?: Record<string, string | null> | null;
+  description_translations?: Record<string, string | null> | null;
+  location_translations?: Record<string, string | null> | null;
+  farmer_name?: string | null;
 }
 
 export default function Marketplace() {
@@ -27,36 +32,121 @@ export default function Marketplace() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage(); // language contains 'en','hi','te','kn', etc.
 
   useEffect(() => {
     fetchCrops();
-  }, []);
+  }, [language]); // refetch or at least re-render if language changes
+  const attachFarmerNamesAndSet = async (rawCrops: any[]) => {
+  // normalizedCrop shape will match Crop interface
+  const typedCrops = rawCrops.map((c: any) => ({
+    id: c.id,
+    name: c.name,
+    description: c.description,
+    price_per_kg: c.price_per_kg,
+    quantity_kg: c.quantity_kg,
+    image_url: c.image_url ?? null,
+    location: c.location ?? null,
+    farmer_id: c.farmer_id,
+    name_translations: c.name_translations ?? null,
+    description_translations: c.description_translations ?? null,
+    location_translations: c.location_translations ?? null,
+    farmer_name: null,
+  })) as Crop[];
+
+  // fetch farmer profiles only if there are farmer_ids
+  const farmerIds = Array.from(new Set(typedCrops.map(c => c.farmer_id).filter(Boolean)));
+  if (farmerIds.length > 0) {
+    const { data: profilesRaw, error: profilesError } = await supabase
+      .from('profiles')
+      .select('*')
+      .in('id', farmerIds);
+
+    if (!profilesError && profilesRaw) {
+      const profileMap = new Map<string, any>();
+      (profilesRaw as any[]).forEach(p => profileMap.set(p.id, p));
+      typedCrops.forEach(c => {
+        const p = profileMap.get(c.farmer_id);
+        const name = p?.name ?? p?.full_name ?? (p?.first_name && p?.last_name ? `${p.first_name} ${p.last_name}` : p?.display_name) ?? null;
+        c.farmer_name = name;
+      });
+    } else {
+      console.warn('profiles fetch error', profilesError);
+    }
+  }
+
+  setCrops(typedCrops);
+  setLoading(false);
+};
 
   const fetchCrops = async () => {
-    try {
-      const { data, error } = await supabase
+  try {
+    // Attempt to fetch including translation columns (if they exist)
+    const { data, error } = await supabase
+      .from('crops')
+      .select(`
+        id,
+        name,
+        description,
+        price_per_kg,
+        quantity_kg,
+        image_url,
+        location,
+        farmer_id,
+        name_translations,
+        description_translations,
+        location_translations
+      `)
+      .eq('available', true)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      // If the error indicates missing columns, re-fetch without translations
+      console.warn('fetchCrops initial query error:', error.message || error);
+      const { data: fallbackData, error: fallbackError } = await supabase
         .from('crops')
-        .select('*')
+        .select('id, name, description, price_per_kg, quantity_kg, image_url, location, farmer_id')
         .eq('available', true)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      setCrops(data || []);
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
+      if (fallbackError) throw fallbackError;
+
+      // Normalize: attach null translations
+      const normalized = (fallbackData || []).map((c: any) => ({
+        ...c,
+        name_translations: null,
+        description_translations: null,
+        location_translations: null,
+      }));
+
+      await attachFarmerNamesAndSet(normalized);
+      return;
     }
+
+    // If original query succeeded, ensure data is typed as any[] then normalize
+    const cropsWithMaybeTranslations = (data || []) as any[];
+    await attachFarmerNamesAndSet(cropsWithMaybeTranslations);
+  } catch (err: any) {
+    console.error('Fetch crops error:', err);
+    toast({
+      title: 'Error',
+      description: err.message || String(err),
+      variant: 'destructive',
+    });
+    setLoading(false);
+  }
+};
+
+
+  const getTranslated = (translations: Record<string, string | null> | undefined | null, original: string) => {
+    if (!translations) return original;
+    const val = translations[language] ?? translations['en'] ?? null;
+    return val ?? original;
   };
 
   const filteredCrops = crops.filter(crop =>
-    crop.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    crop.location?.toLowerCase().includes(searchTerm.toLowerCase())
+    (getTranslated(crop.name_translations, crop.name).toLowerCase().includes(searchTerm.toLowerCase())) ||
+    (getTranslated(crop.location_translations, crop.location || '').toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   return (
@@ -91,7 +181,7 @@ export default function Marketplace() {
                     {crop.image_url ? (
                       <img
                         src={crop.image_url}
-                        alt={crop.name}
+                        alt={getTranslated(crop.name_translations, crop.name)}
                         className="w-full h-full object-cover"
                       />
                     ) : (
@@ -102,9 +192,9 @@ export default function Marketplace() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <CardTitle className="mb-2">{crop.name}</CardTitle>
+                  <CardTitle className="mb-2">{getTranslated(crop.name_translations, crop.name)}</CardTitle>
                   <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
-                    {crop.description}
+                    {getTranslated(crop.description_translations, crop.description)}
                   </p>
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm">
@@ -120,7 +210,13 @@ export default function Marketplace() {
                     {crop.location && (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <MapPin className="h-4 w-4" />
-                        <span>{crop.location}</span>
+                        <span>{getTranslated(crop.location_translations, crop.location)}</span>
+                      </div>
+                    )}
+                    {crop.farmer_name && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <span className="text-xl">👩‍🌾</span>
+                        <span>{crop.farmer_name}</span>
                       </div>
                     )}
                   </div>
